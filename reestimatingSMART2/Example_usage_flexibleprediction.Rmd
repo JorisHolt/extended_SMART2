@@ -1,0 +1,841 @@
+---
+title: "Integrating additional variables on top of SMART2"
+author: "Joris Holtrop"
+date: "`r format(Sys.Date(), '%Y-%B-%d')`"
+output:
+github_document:
+toc_depth: 3
+html_document:
+toc: true
+toc_float: true
+number_sections: false
+theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("tidyverse")
+```
+
+## Contents
+
+-   [1. Introduction](#introduction)
+-   [2. Study Population Definition](#study-population-definition)
+-   [3. SMART2 model](#smart2-model)
+-   [4. SMART2 risk predictions](#smart2-predictions)
+-   [5. Additional variables: Binary variables](#example-binary)
+-   [6. Additional variables: Ordinal variables](#example-ordinal)
+-   [7. Additional variables: Continuous variables](#example-continuous)
+-   [8. Additional variables: Continuous variables with polynomial transformations](#example-polynomial)
+-   [9. Additional variables: Example of how to implement in a function](#example-function)
+
+## 1. Introduction {#introduction}
+
+This is an illustartaion for how additional variables can be integrated on top of the SMART2 risk score for the estimation of 10-year risk of recurrent CV events in patients with established CV disease. This accompanies the paper describing the derivation of additional risk factors and their added value. For more information see the READ.ME file
+
+## 2. Study Population Definition {#study-population-definition}
+
+The SMART2 model applies to individuals aged 40-80 years old with stable established atherosclerotic CV disease at baseline. Atherosclerotic CV disease is defined according to defintions used in the [UCC-SMART study](https://bmjopen.bmj.com/content/13/2/e066952).
+
+### 2.1 CV Disease Subtype Definitions in derivation
+
+The following table is (Supplementary Table 1) from the paper. Sene here is the definition of baseline CV disease (i.e., the patient whom this model is intended) in the derivation data (UCC-SMART).
+
+| CV disease subtype | Definition |
+|-----------------------------|-------------------------------------------|
+| Coronary artery disease | Defined history of angina pectoris with documented stenosis, myocardial infarction, or coronary revascularization (coronary bypass surgery or coronary angioplasty) |
+| Cerebrovascular disease | Defined as history of a transient ischaemic attack, cerebral infarction, amaurosis fugax or retinal infarction, or a history of carotid surgery |
+| Peripheral artery disease | Defined as history of symptomatic and documented obstruction of distal arteries of the leg or a history of vascular surgery of the leg (percutaneous transluminal angioplasty, bypass, or amputation) |
+| Aortic abdominal aneurysm | Defined as history of presence of a supra- or infrarenal aneurysm of the aorta (distal aortic anteroposterior diameter ≥3 cm, measured at baseline examination with ultrasonography) or a history of AAA surgery |
+
+**Abbreviations:** CV = cardiovascular disease; AAA = aortic abdominal aneurysm
+
+------------------------------------------------------------------------
+
+### 2.2 Recommended ICD-10 Codes for baseline CV disease and diabetes in new validation data
+
+The following ICD-10 codes represent an attempt to operationalize the definition for baseline CV disease in the derivation data for the use in routine clinical care data sources. Regional coding practices (e.g., PAD in the US vs UK) may vary, and researchers are encouraged to exercise clinical judgment when mapping definitions to their local coding systems. In case the new data is not registry based we recommend aligning it with the defintions in 2.1
+
+| History of established CV disease | ICD-10 codes |
+|----------------------------------------------|--------------------------|
+| History of coronary artery disease | I20.0;I21-I23;I25 |
+| History of cerebrovascular disease | I61;I63;I64;I63;I65;I66;I67.2 |
+| History of peripheral artery disease | I70.2;I70.20;I.70.21;I70.22;I70.23;I70.24;I70.25;I70.26;I70.29 |
+| History of abdominal aortic aneurysm | I71.3;I71.4 |
+| Diabetes Mellitus (type 1/2) | E10–E11 |
+
+**Abbreviations:** ICD = international classification of disease
+
+------------------------------------------------------------------------
+
+## 3. SMART2 model {#smart2-model}
+
+## 3.1 Predictors Used in SMART2
+
+The following predictors are used by the SMART2 model. For definitions of the individual CV disease histories see prior sections. We recommend to evaluate extreme predictor values (e.g., CRP\>30 mg/L) as they might reflect acute disease (e.g., infection) and not be reflective of the patients baseline risk factor levels and therefor long term risk. It could be considered to truncate these values.
+
+| Predictor | Units | Name in Script | Accepted Values / Notes |
+|------------------|------------------|------------------|-------------------|
+| Age | Years | `age` | 40–80 |
+| Sex | — | `sex` | 0 = Female, 1 = Male |
+| Current Smoking Status | — | `isSmoking` | 0 = Non-smoker/former smoker, 1 = Smoker |
+| Systolic Blood Pressure | mmHg | `sbp` | \- |
+| Non-HDL Cholesterol | mmol/L | `nhdl` | \- |
+| Diabetes Diagnosis | — | `diabetesDiagnosis` | 0 = No, 1 = Yes |
+| History of Coronary Artery Disease | — | `coronaryArteryDisease` | 0 = No, 1 = Yes |
+| History of Aortic Aneurysm | — | `aorticAneurysm` | 0 = No, 1 = Yes |
+| History of Cerebrovascular Disease | — | `cerebrovascularDisease` | 0 = No, 1 = Yes |
+| History of Peripheral Artery Disease | — | `peripheralArteryDisease` | 0 = No, 1 = Yes |
+| Years Since First ASCVD Diagnosis | Years | `yearsSinceFirstDiagnosis` | ≥0 |
+| eGFR (CKD-EPI) | mL/min/1.73m² | `gfr` | \- |
+| C-reactive Protein (CRP) | mg/L | `crp` | \- |
+| Antithrombotic Therapy Use | — | `usingAnticoag` | 0 = No, 1 = Yes |
+
+## 3.2 Additional risk factors
+
+### 3.2.1. Definitions risk factors
+
+| Predictor | Units | Name in Script | Variable Type | Accepted Values / Notes |
+|---------------|---------------|---------------|---------------|---------------|
+| **Medical History** |  |  |  |  |
+| Heart Failure | — | `history_chf` | Binary | 0 = No, 1 = Yes |
+| Atrial Fibrillation | — | `history_af` | Binary | 0 = No, 1 = Yes |
+| Coronary Multivessel Disease | — | `multivessel` | Binary | 0 = No, 1 = Yes; More than 1 afflicted coronary artery |
+| **Physical Measurements** |  |  |  |  |
+| BMI | kg/m² | `bmi` | Continuous | \- |
+| Hip Circumference | cm | `hip` | Continuous | \- |
+| Waist Circumference | cm | `waist` | Continuous | \- |
+| **Social & Family History** |  |  |  |  |
+| Currently Employed | — | `employment` | Binary | 0 = No, 1 = Yes; Currently employed (self-report) |
+| Education Level | — | `education_level` | Ordinal | 0 = Lower, 1 = Middle, 2 = Higher; As per governmental definitions, should roughly divide population in equal thirds nationally |
+| Parental History of CAD | — | `famhistCAD` | Binary | 0 = No, 1 = Yes; One or more parent with CAD prior to age 60 |
+| Parental History of CV Disease | — | `PAfamhist` | Binary | 0 = No, 1 = Yes; Any CV disease prior to age 60 |
+| Former Smoking | — | `formerSmoking` | Binary | 0 = No, 1 = Yes |
+| **Laboratory & Imaging** |  |  |  |  |
+| Troponin I | ng/L | `troponin_i` | Continuous | Measured at representative moment for stable disease |
+| NTproBNP | pg/ml | `ntprobnp` | Continuous | Measured at representative moment for stable disease |
+| Albuminuria | — | `albuminuria` | Binary | 0 = No, 1 = Yes; ≥30 mg/g in urinary sample |
+
+### 3.2.2. Sub distribution hazard rates
+
+| Predictor | Component | Log Coefficient | Hazard Ratio | 95% CI |
+|----|----|----|----|----|
+| **Medical History** |  |  |  |  |
+| Heart Failure | — | 0.52701 | 1.69 | [1.63-1.76] |
+| Atrial Fibrillation | — | 0.25595 | 1.25 | [1.25-1.34] |
+| Coronary Multivessel Disease | — | 0.34615 | 1.41 | [1.37-1.46] |
+| **Physical Measurements** |  |  |  |  |
+| BMI | Original | -0.12094 | 0.89 |  |
+| BMI | Squared | 0.00201 | 1.00 |  |
+| Hip Circumference | Original | -0.09897 | 0.91 |  |
+| Hip Circumference | Squared | 0.00045 | 1.00 |  |
+| Waist Circumference | — | 0.00292 | 1.00 | 1.03 [1.02-1.04] |
+| **Social & Family History** |  |  |  |  |
+| Currently Employed | — | -0.25512 | 0.78 | [0.75-0.80] |
+| Education level |  |  |  |  |
+|  | Lower | Reference | 0 | 1 |
+|  | Middle | -0.03897 | 0.96 | [0.93-0.99] |
+|  | Higher | -0.19816 | 0.82 | [0.79-0.86] |
+| Parental History of CAD | — | 0.09085 | 1.10 | [0.99-1.21] |
+| Parental History of CVD | — | -0.06851 | 0.93 | [0.82-1.06] |
+| Former Smoking | — | -0.00254 | 1.00 | [0.97-1.02] |
+| **Laboratory & Imaging** |  |  |  |  |
+| Troponin I | log | 0.11352 | 1.12 | [1.09-1.16] |
+| NTproBNP | log | 0.15878 | 1.17 | [1.13-1.22] |
+| Albuminuria | — | 0.35281 | 1.42 | [1.33-1.52] |
+
+### 3.2.3. Prevalences & mean risk factors
+
+| Predictor | Population Value | Notes |
+|---------------------|---------------------------------|------------------|
+| **Medical History** |  |  |
+| Heart Failure | 0.074 | 7.4% prevalence |
+| Atrial Fibrillation | 0.104 | 10.4% prevalence |
+| Coronary Multivessel Disease | 0.497 | 49.7% prevalence |
+| **Physical Measurements** |  |  |
+| BMI | 27.89 kg/m² | Population mean |
+| BMI Squared | 778.44 | Population mean of squared values |
+| Hip Circumference | 103.82 cm | Population mean |
+| Hip Circumference Squared | 10,785.32 | Population mean of squared values |
+| Waist Circumference | 99.75 cm | Population mean |
+| **Social & Family History** |  |  |
+| Currently Employed | 0.382 | 38.2% prevalence |
+| Lower Education | 0.356 | 35.6% prevalence |
+| Middle Education | 0.423 | 42.3% prevalence |
+| Higher Education | 0.221 | 22.1% prevalence |
+| Parental History of CVD | 0.194 | 19.4% prevalence |
+| Parental History of CAD | 0.163 | 16.3% prevalence |
+| Former Smoking | 0.508 | 50.8% prevalence |
+| Pack Years (log) | 0.500 | Population mean of log-transformed values |
+| **Laboratory & Imaging** |  |  |
+| Troponin I (log) | 1.654 | Population mean of log-transformed values |
+| NTproBNP (log) | 5.256 | Population mean of log-transformed values |
+| Albuminuria | 0.138 | 13.8% prevalence |
+
+## 3.3 Outcome Definitions for SMART2
+
+The outcome for SMART2 model is recurrent CV events, defined as the composite of non-fatal myocardial infarction, non-fatal stroke and CV-death. This is defined using the following ICD-10 codes.
+
+| Category | Endpoint Description | ICD-10 Codes |
+|--------------------|----------------------------------|------------------|
+| **Fatal CV Disease** | Hypertensive disease | I10–I16 |
+|  | Ischaemic heart disease | I20–I25 |
+|  | Arrhythmias, heart failure | I46–I52 |
+|  | Cerebrovascular disease | I60–I69 |
+|  | Atherosclerosis / AAA | I70–I73 |
+|  | Sudden death / death \< 24h symptom onset | R96.0–R96.1 |
+| *Excluded (Fatal)* | Myocarditis, unspecified | I51.4 |
+|  | Subarachnoid haemorrhage | I60 |
+|  | Subdural haemorrhage | I62 |
+|  | Cerebral aneurysm | I67.1 |
+|  | Cerebral arteritis | I68.2 |
+|  | Moyamoya | I67.5 |
+| **Non-Fatal Events** | Non-fatal myocardial infarction | I21–I23 |
+|  | Non-fatal stroke | I60–I69 |
+| *Excluded (Non-Fatal)* | Subarachnoid haemorrhage | I60 |
+|  | Subdural haemorrhage | I62 |
+|  | Cerebral aneurysm | I67.1 |
+|  | Cerebral arteritis | I68.2 |
+|  | Moyamoya | I67.5 |
+
+**Abbreviations:** CV = cardiovascular; AAA = aortic abdominal aneurysm; ICD = International Classification of Diseases
+
+------------------------------------------------------------------------
+
+## 4. SMART2 risk predictions {#smart2-predictions}
+
+### 4.1 Example patients
+
+```{r example-patients}
+example_patients <- tibble(
+        patient_id = 1:4,
+        # SMART2 predictors (identical for all patients)
+        age = 65,
+        age_squared = 65^2,
+        sex = 1,                           # Male
+        sbp = 140,                         # mmHg
+        diabetesDiagnosis = 1,             # Yes
+        coronaryArteryDisease = 1,         # Yes
+        aorticAneurysm = 0,                # No
+        cerebrovascularDisease = 0,        # No
+        peripheralArteryDisease = 0,       # No
+        yearsSinceFirstDiagnosis = 5,
+        yearsSinceFirstDiagnosis_squared = 5^2,
+        nhdl_log = log(4.0),              # 4.0 mmol/L
+        gfr = 70,                         # mL/min/1.73m²
+        gfr_squared = 70^2,
+        crp_log = log(3.0),               # 3.0 mg/L
+        usingAnticoag = 1,                # Yes
+        isSmoking = 0)                    # No
+
+### Binary predictors: Heart failure 
+example_patients$history_chf <- c(1, 0, 0, 0) #Patient 1: history of heart failure, others no history of heart failure
+
+### Ordinal predictors: Heart failure 
+example_patients$education_level <- c("lower_education", "higher_education", "lower_education", "lower_education") #Patient 1: Lower education level; Patient 2: Higher education level; Others lower education level
+
+### Continuous predictors: Troponin I
+example_patients$troponin_i <- c(0, 0, 20, 40) #Patient 3: Troponin of 20; Patient 4: Troponin 40
+
+### Continuous predictors: BMI
+example_patients$bmi <- c(25, 25, 28, 40) #Patient 4: BMI of 28; Patient 4: BMI 40
+
+```
+
+### 4.2 SMART2 parameters
+
+#### 4.2.1. Baseline risk
+
+```{r baseline-hazard}
+baseline_risk_vector <- c(
+        "one_year_risk" = 0.020867965, 
+        "two_year_risk" = 0.03481669, 
+        "three_year_risk" = 0.047574783, 
+        "four_year_risk" = 0.06257936, 
+        "five_year_risk" = 0.07887031,
+        "six_year_risk" = 0.094891922, 
+        "seven_year_risk" = 0.112217969, 
+        "eight_year_risk" = 0.129898521, 
+        "nine_year_risk" = 0.149001544, 
+        "ten_year_risk" = 0.165822797)
+
+baseline_risk <- baseline_risk_vector["ten_year_risk"] #Selecting the 10 year risk one
+```
+
+#### 4.2.2. Mean liniear predictor
+
+```{r mean-lp}
+mean_lineair_predictor <- -0.0463729
+```
+
+### 4.3 Step 1. Estimating SMART2 risk
+
+```{r estimating-smart2}
+example_patients <- example_patients %>% 
+        rowwise() %>% 
+        mutate(lineair_predictor_SMART2 = ( #Calculating the individual lineair predictor for each patient
+          aorticAneurysm * 0.330356631 +
+          age * -0.03496022 +
+          age_squared * 0.000551072 +
+          sex * 0.287658743 +
+          sbp * 0.0018913154 +  
+          diabetesDiagnosis * 0.318170659 +
+          coronaryArteryDisease * 0.294701954 +
+          cerebrovascularDisease * 0.34831786 + 
+          peripheralArteryDisease * 0.22446658 +
+          yearsSinceFirstDiagnosis * 0.047699585 + 
+          yearsSinceFirstDiagnosis_squared * -0.00164973 + 
+          nhdl_log * 0.540364249 +    
+          gfr * -0.03967521 +
+          gfr_squared * 0.000218613 +
+          crp_log * 0.151760173 + 
+          usingAnticoag * -0.21072103 + 
+          isSmoking * 0.345583271)) %>% 
+        mutate(sum_exp = lineair_predictor_SMART2 - (mean_lineair_predictor)) %>% #Normally here would be the adjustment for the risk regions. 
+        mutate(smart2_risk = 1 - ((1 - baseline_risk)^exp(sum_exp))) %>% 
+        mutate(smart2_risk= round(smart2_risk, digits = 2)) %>%  
+        ungroup()
+
+# Display table
+knitr::kable(example_patients %>% dplyr::select(patient_id, smart2_risk) %>% mutate(smart2_risk = sprintf("SMART2 risk: %.2f%%", smart2_risk * 100)), 
+             digits = 2, caption = "SMART2 Risk Predictions for Example Patients")
+```
+
+## 5 Additional variables: Binary variables {#example-binary}
+
+### 5.1 Step 2 Adjusting variables to population prevalence
+
+For the example patients patient 1 has a history of heart failure and the other patients do not. The code below shows the steps taken for re-estimating the risk for patients with and without these additional binary risk factor, to illustrate this we use heart failure as an example.
+
+```{r binary-example-heartfailure}
+shr_history_chf <- 1.69 #The sub distribution hazard rate for history of heart failure pooled across all cohort
+prevalence_history_chf <- 0.074 #Hypothetical prevalence of heart failure for the example (10% prevalence -> 0.1)
+```
+
+#### 5.1.1. Step 2a Estimating population level risk
+
+```{r step-2-a-binary}
+population_level_risk_history_chf <- shr_history_chf * prevalence_history_chf + (1 - prevalence_history_chf)
+cat(paste0("Population level risk [r] due to heart failure is: ", population_level_risk_history_chf))
+```
+
+#### 5.1.2. Step 2b. Risk factor present
+
+```{r step-2-b-binary}
+when_history_present <- shr_history_chf/population_level_risk_history_chf
+cat(paste0("Prevalence adjusted risk for when heart failure is present: ", when_history_present))
+```
+
+#### 5.1.3. Step 2c Risk factor absent
+
+```{r step-2-c-binary}
+when_history_absent <- 1/population_level_risk_history_chf
+cat(paste0("Prevalence adjusted risk for when heart failure is absent: ", when_history_absent))
+
+```
+
+### 5.1.4. Step 3 Re-estimating risk in presence of binary risk factor
+
+```{r step-3-binary}
+# Calculate updated risks for patients 1 and 2
+patient_1_updated_risk <- 1 - (1 - example_patients$smart2_risk[1])^when_history_present
+patient_2_updated_risk <- 1 - (1 - example_patients$smart2_risk[2])^when_history_absent
+
+# Create comparison table
+risk_comparison <- tibble(
+  patient_id = c(1, 2),
+  heart_failure = c("Yes", "No"),
+  smart2_risk_pct = sprintf("%.2f%%", c(example_patients$smart2_risk[1], example_patients$smart2_risk[2]) * 100),
+  updated_risk_pct = sprintf("%.2f%%", c(patient_1_updated_risk, patient_2_updated_risk) * 100)
+)
+
+knitr::kable(risk_comparison, 
+             col.names = c("Patient ID", "Heart Failure", "Original SMART2 Risk", "Updated Risk"),
+             caption = "Risk Comparison: Impact of Heart Failure on 10-year Cardiovascular Risk")
+```
+
+## 6. Additional variables: Ordinal variables {#example-ordinal}
+
+### 6.1 Step 2 Adjusting variables to population prevalence
+
+For the example patients patient 1 has higher education and patient 2 has lower education. The code below shows the steps taken for re-estimating the risk for patients with different education levels, to illustrate this we use education level as an example.
+
+```{r extract-treatment-results-ordinal}
+# Sub distribution hazard rates for education levels (reference: lower education)
+shr_education_lower <- 1.00    # Reference level
+shr_education_middle <- 0.96   # Middle education HR
+shr_education_higher <- 0.82   # Higher education HR
+
+# Hypothetical prevalences for education levels (should sum to 1)
+prevalence_education_lower <- 0.356   # 33% lower education
+prevalence_education_middle <- 0.423  # 33% middle education  
+prevalence_education_higher <- 0.221  # 34% higher education
+```
+
+#### 6.1.1. Step 2a Estimating population level risk
+
+```{r step-2-a-ordinal}
+population_level_risk_education <- (shr_education_lower * prevalence_education_lower) + 
+                                   (shr_education_middle * prevalence_education_middle) + 
+                                   (shr_education_higher * prevalence_education_higher)
+cat(paste0("Population level risk [r] due to education levels is: ", population_level_risk_education))
+```
+
+#### 6.1.2. Step 2b. Risk factor present
+
+```{r step-2-b-ordinal}
+when_education_lower <- shr_education_lower/population_level_risk_education
+when_education_middle <- shr_education_middle/population_level_risk_education
+when_education_higher <- shr_education_higher/population_level_risk_education
+
+cat(paste0("Prevalence adjusted risk for lower education: ", when_education_lower, "\n"))
+cat(paste0("Prevalence adjusted risk for middle education: ", when_education_middle, "\n"))
+cat(paste0("Prevalence adjusted risk for higher education: ", when_education_higher))
+```
+
+### 6.1.3. Step 3 Re-estimating risk in presence of ordinal risk factor
+
+```{r step-3-ordinal}
+# Calculate updated risks for patients 1 and 2 based on education levels
+patient_1_updated_risk_education <- 1 - (1 - example_patients$smart2_risk[1])^when_education_higher  # Higher education
+patient_2_updated_risk_education <- 1 - (1 - example_patients$smart2_risk[2])^when_education_lower   # Lower education
+
+# Create comparison table
+education_risk_comparison <- tibble(
+  patient_id = c(1, 2),
+  education_level = c("Higher", "Lower"),
+  smart2_risk_pct = sprintf("%.2f%%", c(example_patients$smart2_risk[1], example_patients$smart2_risk[2]) * 100),
+  updated_risk_pct = sprintf("%.2f%%", c(patient_1_updated_risk_education, patient_2_updated_risk_education) * 100)
+)
+
+knitr::kable(education_risk_comparison, 
+             col.names = c("Patient ID", "Education Level", "Original SMART2 Risk", "Updated Risk"),
+             caption = "Risk Comparison: Impact of Education Level on 10-year Cardiovascular Risk")
+```
+
+## 7 Additional variables: Continuous variables {#example-continuous}
+
+### 7.1 Step 2 Adjusting variables to population mean
+
+For the example patients patient 3 has a troponin I of 20 ng/L and patient 4 has a troponin I of 40 ng/L. The code below shows the steps taken for re-estimating the risk for patients with different troponin I levels, adjusting for the population mean on the log(SHR) scale.
+
+```{r extract-treatment-results-continuous}
+# Sub distribution hazard rate for log Troponin I
+shr_troponin_i <- 1.12
+log_shr_troponin_i <- log(shr_troponin_i)  
+
+# Population mean and patient values
+log_mean_troponin_i <- 1.7  # log(troponin ng/L)
+
+# Patient troponin levels
+patient_3_troponin_i <- example_patients$troponin_i[3]  # --> 20 ng/L
+patient_4_troponin_i <- example_patients$troponin_i[4]  # --> 40 ng/L
+log_patient_3_troponin_i <- log(patient_3_troponin_i)  # 2.995732
+log_patient_4_troponin_i <- log(patient_4_troponin_i)  # 3.688879
+
+cat(paste0("SHR for Troponin I: ", shr_troponin_i, "\n"))
+cat(paste0("Log SHR for Troponin I: ", log_shr_troponin_i, "\n"))
+cat(paste0("Patient 3 Troponin I: ", patient_3_troponin_i, " ng/L (log: ", log_patient_3_troponin_i, ")\n"))
+cat(paste0("Patient 4 Troponin I: ", patient_4_troponin_i, " ng/L (log: ", log_patient_4_troponin_i, ")"))
+```
+
+#### 7.1.1. Step 2a Adjusting for population mean
+
+```{r step-2-a-continuous}
+# Equation for adjustment: [r] = SHRlog troponin * (TroponinPatient – Troponinpopulation mean)
+adjustment_patient_3 <- log_shr_troponin_i * (log_patient_3_troponin_i - log_mean_troponin_i)
+adjustment_patient_4 <- log_shr_troponin_i * (log_patient_4_troponin_i - log_mean_troponin_i)
+
+# Exponentiate to get the adjustment factors
+r_patient_3 <- exp(adjustment_patient_3)
+r_patient_4 <- exp(adjustment_patient_4)
+
+cat(paste0("Patient 3 adjustment calculation: ", log_shr_troponin_i, " * (", log_patient_3_troponin_i, " - ", log_mean_troponin_i, ") = ", adjustment_patient_3, "\n"))
+cat(paste0("Patient 3 adjustment factor [r]: ", r_patient_3, "\n"))
+cat(paste0("Patient 4 adjustment calculation: ", log_shr_troponin_i, " * (", log_patient_4_troponin_i, " - ", log_mean_troponin_i, ") = ", adjustment_patient_4, "\n"))
+cat(paste0("Patient 4 adjustment factor [r]: ", r_patient_4))
+```
+
+### 7.1.2. Step 3 Re-estimating risk in presence of continuous risk factor
+
+```{r step-3-continuous}
+# Calculate updated risks for patients 3 and 4 based on troponin I levels
+# Formula: 1 – (1- individual SMART2 predicted risk)^[r]
+patient_3_updated_risk_troponin <- 1 - (1 - example_patients$smart2_risk[3])^r_patient_3
+patient_4_updated_risk_troponin <- 1 - (1 - example_patients$smart2_risk[4])^r_patient_4
+
+# Create comparison table
+troponin_risk_comparison <- tibble(
+  patient_id = c(3, 4),
+  troponin_i_ng_l = c(patient_3_troponin_i, patient_4_troponin_i),
+  smart2_risk_pct = sprintf("%.2f%%", c(example_patients$smart2_risk[3], example_patients$smart2_risk[4]) * 100),
+  updated_risk_pct = sprintf("%.2f%%", c(patient_3_updated_risk_troponin, patient_4_updated_risk_troponin) * 100)
+)
+
+knitr::kable(troponin_risk_comparison, 
+             col.names = c("Patient ID", "Troponin I (ng/L)", "Original SMART2 Risk", "Updated Risk"),
+             caption = "Risk Comparison: Impact of Troponin I Level on 10-year Cardiovascular Risk")
+```
+
+## 8 Additional variables: Continuous variables with polynomial transformations {#example-polynomial}
+
+### 8.1 Step 2 Adjusting variables to population mean with BMI as example
+
+**For continuous predictors the SHR should be used on the log scale, this goes for all continuous variables regardless of whether these are log transformed, or any other transformation is applied** For the example patients patient 3 has a BMI of 40 kg/m² and patient 4 has a BMI of 28 kg/m². The code below shows the steps taken for re-estimating the risk for patients with different BMI levels, including both the original and squared polynomial terms.
+
+```{r extract-treatment-results-bmi}
+# Sub distribution hazard rates for BMI (original and squared terms)
+log_shr_bmi_original <- -0.12094  
+log_shr_bmi_squared <-  0.00201    
+
+# Population mean and patient values
+mean_bmi <- 27.9  # kg/m²
+mean_bmi_squared <- 27.9^2  #
+
+# Patient BMI levels
+patient_3_bmi <- example_patients$bmi[3]  # --> 40 kg/m²
+patient_4_bmi <- example_patients$bmi[4]  # --> 28 kg/m²
+patient_3_bmi_squared <- patient_3_bmi^2  # 1600
+patient_4_bmi_squared <- patient_4_bmi^2  # 784
+
+cat(paste0("SHR for BMI original: ", exp(log_shr_bmi_original), " (log: ", log_shr_bmi_original, ")\n"))
+cat(paste0("SHR for BMI squared: ", exp(log_shr_bmi_squared), " (log: ", log_shr_bmi_squared, ")\n"))
+cat(paste0("Mean BMI: ", mean_bmi, " kg/m² (squared: ", mean_bmi_squared, ")\n"))
+cat(paste0("Patient 3 BMI: ", patient_3_bmi, " kg/m² (squared: ", patient_3_bmi_squared, ")\n"))
+cat(paste0("Patient 4 BMI: ", patient_4_bmi, " kg/m² (squared: ", patient_4_bmi_squared, ")"))
+```
+
+#### 8.1.1. Step 2a Adjusting for population mean
+
+```{r step-2-a-bmi}
+# Equation for adjustment: [r] = SHR_BMI * (BMI_patient – BMI_population_mean) + SHR_BMI_squared * (BMI²_patient – BMI²_population_mean)
+adjustment_patient_3_bmi <- log_shr_bmi_original * (patient_3_bmi - mean_bmi) + 
+                           log_shr_bmi_squared * (patient_3_bmi_squared - mean_bmi_squared)
+
+adjustment_patient_4_bmi <- log_shr_bmi_original * (patient_4_bmi - mean_bmi) + 
+                           log_shr_bmi_squared * (patient_4_bmi_squared - mean_bmi_squared)
+
+# Exponentiate to get the adjustment factors
+r_patient_3_bmi <- exp(adjustment_patient_3_bmi)
+r_patient_4_bmi <- exp(adjustment_patient_4_bmi)
+
+cat(paste0("Patient 3 BMI adjustment calculation:\n"))
+cat(paste0("  ", log_shr_bmi_original, " * (", patient_3_bmi, " - ", mean_bmi, ") + ", log_shr_bmi_squared, " * (", patient_3_bmi_squared, " - ", mean_bmi_squared, ")\n"))
+cat(paste0("  = ", log_shr_bmi_original * (patient_3_bmi - mean_bmi), " + ", log_shr_bmi_squared * (patient_3_bmi_squared - mean_bmi_squared), " = ", adjustment_patient_3_bmi, "\n"))
+cat(paste0("Patient 3 adjustment factor [r]: ", r_patient_3_bmi, "\n\n"))
+
+cat(paste0("Patient 4 BMI adjustment calculation:\n"))
+cat(paste0("  ", log_shr_bmi_original, " * (", patient_4_bmi, " - ", mean_bmi, ") + ", log_shr_bmi_squared, " * (", patient_4_bmi_squared, " - ", mean_bmi_squared, ")\n"))
+cat(paste0("  = ", log_shr_bmi_original * (patient_4_bmi - mean_bmi), " + ", log_shr_bmi_squared * (patient_4_bmi_squared - mean_bmi_squared), " = ", adjustment_patient_4_bmi, "\n"))
+cat(paste0("Patient 4 adjustment factor [r]: ", r_patient_4_bmi))
+```
+
+### 8.1.2. Step 3 Re-estimating risk in presence of BMI levels
+
+```{r step-3-bmi}
+# Calculate updated risks for patients 3 and 4 based on BMI levels
+# Formula: 1 – (1- individual SMART2 predicted risk)^[r]
+patient_3_updated_risk_bmi <- 1 - (1 - example_patients$smart2_risk[3])^r_patient_3_bmi
+patient_4_updated_risk_bmi <- 1 - (1 - example_patients$smart2_risk[4])^r_patient_4_bmi
+
+# Create comparison table
+bmi_risk_comparison <- tibble(
+  patient_id = c(3, 4),
+  bmi_kg_m2 = c(patient_3_bmi, patient_4_bmi),
+  smart2_risk_pct = sprintf("%.2f%%", c(example_patients$smart2_risk[3], example_patients$smart2_risk[4]) * 100),
+  updated_risk_pct = sprintf("%.2f%%", c(patient_3_updated_risk_bmi, patient_4_updated_risk_bmi) * 100)
+)
+
+knitr::kable(bmi_risk_comparison, 
+             col.names = c("Patient ID", "BMI (kg/m²)", "Original SMART2 Risk", "Updated Risk"),
+             caption = "Risk Comparison: Impact of BMI on 10-year Cardiovascular Risk")
+```
+
+## 9 Additional variables: Example of how to implement in a function {#example-function}
+
+## 9.1. Risk adjustment function
+
+# Function example for how to re-estimate risk
+
+```{r smart-reestimate}
+recalculate_smart2_risk <- function(data, smart2_riskcolumn, predictor){
+  
+  # Define coefficients and prevalence data for SMART2 risk recalculation
+  risk_factors_and_prevalence <- tibble::tibble(
+    riskfactor = c(
+      "history_chf",
+      "history_af",
+      "multivessel",
+      "bmi",
+      "bmi",
+      "hip",
+      "hip",
+      "waist",
+      "employment",
+      "education_level",
+      "education_level",
+      "education_level",
+      "famhistCAD",
+      "PAfamhist",
+      "formerSmoking",
+      "troponin_i",
+      "ntprobnp",
+      "albuminuria"
+    ),
+    
+    Varname = c(
+      "history_chf",
+      "history_af",
+      "multivessel",
+      "bmi",
+      "bmi_squared",
+      "hip",
+      "hip_squared",
+      "waist",
+      "employment",
+      "lower_education",
+      "middle_education",
+      "higher_education",
+      "famhistCAD",
+      "PAfamhist",
+      "formerSmoking",
+      "troponin_i_log",
+      "ntprobnp_log",
+      "albuminuria"
+    ),
+    
+    type = c(
+      "Binary",          # history_chf
+      "Binary",          # history_af
+      "Binary",          # multivessel
+      "Continuous",      # bmi
+      "Continuous",      # bmi_squared
+      "Continuous",      # hip
+      "Continuous",      # hip_squared
+      "Continuous",      # waist
+      "Binary",          # employment
+      "Ordinal",         # lower_education
+      "Ordinal",         # middle_education
+      "Ordinal",         # higher_education
+      "Binary",          # famhistCAD
+      "Binary",          # PAfamhist
+      "Binary",          # formerSmoking
+      "Continuous",      # troponin_i_log
+      "Continuous",      # ntprobnp_log
+      "Binary"           # albuminuria
+    ),
+    transformation = c(
+      "original",          # history_chf
+      "original",          # history_af
+      "original",          # multivessel
+      "squared",      # bmi
+      "squared",      # bmi_squared
+      "squared",      # hip
+      "squared",      # hip_squared
+      "original",      # waist
+      "original",          # employment
+      "Ordinal",         # lower_education
+      "Ordinal",         # middle_education
+      "Ordinal",         # higher_education
+      "original",          # famhistCAD
+      "original",          # PAfamhist
+      "original",          # formerSmoking
+      "log",      # troponin_i_log
+      "log",      # ntprobnp_log
+      "original"           # albuminuria
+    ),
+    sdh = c(
+      1.69,      # history_chf
+      1.29,      # history_af
+      1.41,      # multivessel
+      0.886,     # bmi
+      1.00,      # bmi_squared
+      0.906,     # hip
+      1.00,      # hip_squared
+      1.00,      # waist
+      0.775,     # employment
+      1.00,      # lower_education
+      0.962,     # middle_education
+      0.820,     # higher_education
+      1.10,      # famhistCAD
+      0.934,     # PAfamhist
+      0.997,     # formerSmoking
+      1.12,      # troponin_i_log
+      1.17,      # ntprobnp_log
+      1.42       # albuminuria
+    ),
+    
+    sdh_log = c(
+      0.52701,    # history_chf
+      0.25595,    # history_af
+      0.34615,    # multivessel
+      -0.12094,    # bmi
+      0.00201 ,    # bmi_squared
+      -0.09897,    # hip
+      0.00045,    # hip_squared
+      0.00277,    # waist
+      -0.25512,    # employment
+      0.00000,    # lower_education
+      -0.03897,    # middle_education
+      -0.19816,    # higher_education
+      0.09085,    # famhistCAD
+      -0.06851,    # PAfamhist
+      -0.00254,    # formerSmoking
+      0.11352 ,    # troponin_i_log
+      0.15878,    # ntprobnp_log
+      0.35281      # albuminuria
+    ),
+    
+    prevalence = c(
+      0.0741147485734872,      # history_chf
+      0.10419192455318,      # history_af
+      0.49683648225584  ,      # multivessel
+      27.8941228851291,      # bmi
+      778.439990763428  ,      # bmi_squared
+      103.816392718746  ,      # hip
+      10785.3216578481,      # hip_squared
+      99.7531483207188  ,      # waist
+      0.381946258546296 ,      # employment
+      0.356314666621693 ,      # lower_education
+      0.42257713615934  ,      # middle_education
+      0.221074467277741 ,      # higher_education
+      0.167284478661724 ,      # famhistCAD
+      0.194122432377466 ,      # PAfamhist
+      0.507530457216569 ,      # formerSmoking
+      1.65396328517754  ,      # troponin_i_log
+      5.25618594566353  ,      # ntprobnp_log
+      0.138629681707785        # albuminuria
+    )
+  )
+
+    subset <- risk_factors_and_prevalence %>% filter(riskfactor == predictor)
+    type <- unique(subset$type)
+  
+    # For binary predictors
+    if (type == "Binary") {
+      
+      if (is.numeric(data[[predictor]])) {
+        data[[predictor]] <- as.character(data[[predictor]])
+      }
+      
+      HR <- exp(subset$sdh_log[1])
+      prevalence <- (subset$prevalence[1])
+      pop_RR <- HR * prevalence + (1 - prevalence)
+      wHR <- ifelse(data[[predictor]] == "1", HR / pop_RR, 1 / pop_RR)
+      data[[paste0(predictor, "_new_risk")]] <- 1 - (1 - data[[smart2_riskcolumn]])^wHR
+    }
+    
+    # For ordinal predictors
+    if (type == "Ordinal") {
+    
+    subset <- subset %>% filter(sdh_log != 0)
+    
+    HR <- c(1, exp(subset$sdh_log))
+    prevalence <- subset %>% dplyr::select(prevalence) %>%  pull()
+    prevalence <- c(1 - sum(prevalence), prevalence)
+    weighted_mean <- sum(HR * prevalence)
+    wHR <- HR/weighted_mean
+    
+  
+    education_mapping <- c("lower_education" = 0, "middle_education" = 1, "higher_education" = 2)
+    current_value <- as.character(data[[predictor]])
+    
+    x <- education_mapping[current_value]
+    HR_patient <- wHR[x + 1]
+    
+    data[[paste0(predictor, "_new_risk")]] <- 1 - (1 - data[[smart2_riskcolumn]])^(HR_patient)
+    
+    }else if (type == "Continuous") { 
+      
+      transformations <- unique(subset$transformation)
+      
+      for(trans in transformations){
+        trans_subset <- subset[subset$transformation == trans, ]
+      
+      if(trans == "original") {
+        log_HR <- (trans_subset$sdh_log)
+        mean_value <- trans_subset$prevalence[1]
+        wHR <- exp((data[[predictor]] - mean_value) * log_HR)
+        data[[paste0(predictor, "_", trans, "_new_risk")]] <- 1 - (1 - data[[smart2_riskcolumn]])^wHR
+      } 
+      else if(trans == "squared"){
+        log_HR <- (trans_subset$sdh_log)
+        mean_value <- trans_subset$prevalence
+        wHR <- exp((data[[predictor]] - mean_value[1]) * log_HR[1] + (data[[predictor]]^2 - mean_value[2]) * log_HR[2])
+        data[[paste0(predictor, "_", trans, "_new_risk")]] <- 1 - (1 - data[[smart2_riskcolumn]])^wHR
+      } 
+      else { # log transformation
+        log_HR <- (trans_subset$sdh_log)
+        mean_value <- trans_subset$prevalence
+        wHR <- exp((log(data[[predictor]] + 0.01) - mean_value) * log_HR)
+        data[[paste0(predictor, "_", trans, "_new_risk")]] <- 1 - (1 - data[[smart2_riskcolumn]])^wHR
+      }
+      
+      }
+    }
+      
+      return(data)
+    }
+
+```
+
+### Example: Apply function for heart failure
+
+```{r example-chf}
+example_patients <- recalculate_smart2_risk(example_patients, "smart2_risk", "history_chf")
+```
+
+```{r display-chf}
+library(knitr)
+example_patients %>%
+  select(patient_id, smart2_risk, history_chf, history_chf_new_risk) %>%
+  kable(
+    digits = 4,
+    caption = "SMART2 risk adjusted for history of heart failure"
+  )
+```
+
+### Example: Apply function for education level
+
+```{r example-edu}
+example_patients <- recalculate_smart2_risk(example_patients, "smart2_risk", "education_level")
+```
+
+```{r display-edu}
+example_patients %>%
+  select(patient_id, smart2_risk, education_level, education_level_new_risk) %>%
+  kable(
+    digits = 4,
+    caption = "SMART2 risk adjusted for education level"
+  )
+```
+
+### Example: Apply function for troponin I
+
+```{r example-trop}
+example_patients <- recalculate_smart2_risk(example_patients, "smart2_risk", "troponin_i")
+```
+
+```{r display-trop}
+example_patients %>%
+  select(patient_id, smart2_risk, troponin_i, troponin_i_log_new_risk) %>%
+  kable(
+    digits = 4,
+    caption = "SMART2 risk adjusted for Troponin I (log-transformed)"
+  )
+```
+
+### Example: Apply function for BMI
+
+```{r example-bmi}
+example_patients <- recalculate_smart2_risk(example_patients, "smart2_risk", "bmi")
+```
+
+```{r display-bmi}
+example_patients %>%
+  select(patient_id, smart2_risk, bmi, bmi_squared_new_risk) %>%
+  kable(
+    digits = 4,
+    caption = "SMART2 risk adjusted for BMI (quadratic)"
+  )
+```
