@@ -1,4 +1,4 @@
-# Re-estimating SMART2
+# Integrating additional predictors on top of the SMART2 model
 
 This repository accompanies the manuscript: *"Flexible addition of new clinical predictors to existing cardiovascular risk models using a prevalence-adjusted hazard reweighting approach."*
 
