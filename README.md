@@ -1,6 +1,6 @@
-# Integrating additional predictors on top of the SMART2 model
+# Improving 10-year cardiovascular risk prediction in patients with established cardiovascular disease: flexible addition of risk predictors on top of the SMART2 risk score
 
-This repository accompanies the manuscript: *"Flexible addition of new clinical predictors to existing cardiovascular risk models using a prevalence-adjusted hazard reweighting approach."*
+This repository accompanies the manuscript: *"Improving 10-year cardiovascular risk prediction in patients with established cardiovascular disease: flexible addition of risk predictors on top of the SMART2 risk score."*
 
 The manuscript describes how 10-year risk of recurrent cardiovascular (CV) events, as estimated by the SMART2 model, can be re-estimated in the presence of additional risk factors not included in the original model.
 
